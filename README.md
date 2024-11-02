@@ -1,0 +1,1 @@
+This project will be a simple luxmeter in a delightfully globular form factor. The goals of this personal project are to practice embedded development related to sensor integration and BLE, as well as software development related to data visualization and GUIs.
