@@ -5,27 +5,6 @@
 
 #define I2C0_NODE DT_NODELABEL(veml7700)
 
-// static const struct device *get_veml7700_device(void)
-// {
-// 	const struct device *const dev = DEVICE_DT_GET_ANY(vishay_veml7700);
-
-// 	if (dev == NULL) {
-// 		/* No such node, or the node does not have status "okay". */
-// 		printk("\nError: no device found.\n");
-// 		return NULL;
-// 	}
-
-// 	if (!device_is_ready(dev)) {
-// 		printk("\nError: Device \"%s\" is not ready; "
-// 		       "check the driver initialization logs for errors.\n",
-// 		       dev->name);
-// 		return NULL;
-// 	}
-
-// 	printk("Found device \"%s\", getting sensor data\n", dev->name);
-// 	return dev;
-// }
-
 static const struct device *get_veml7700_device(void)
 {  
     /* You can use either of these to get the device */
@@ -47,11 +26,9 @@ static const struct device *get_veml7700_device(void)
         return NULL;
     }
 
-
     printk("Found device \"%s\", getting sensor data\n", dev->name);
     return dev;
 }
-
 
 int main(void)
 {
