@@ -13,8 +13,8 @@
 
 // Defines for SD Card
 #define MAX_PATH 128
-#define SOME_FILE_NAME "some.dat"
-#define SOME_DIR_NAME "some"
+#define SOME_FILE_NAME "data.txt"
+#define SOME_DIR_NAME "data"
 #define SOME_REQUIRED_LEN MAX(sizeof(SOME_FILE_NAME), sizeof(SOME_DIR_NAME))
 
 // Setup for SD Card with fatfs library
@@ -28,6 +28,10 @@ static struct fs_mount_t mp = {
 	.type = FS_FATFS,
 	.fs_data = &fat_fs,
 };
+
+typedef struct {
+	int32_t lux;
+} SensorData;
 
 static const struct device *get_veml7700_device(void)
 {  
@@ -53,8 +57,8 @@ static const struct device *get_veml7700_device(void)
     return dev;
 }
 
-static bool create_some_entries(const char *base_path)
-{
+/* Function to create data directory and file if it doesn't exist */
+static bool create_directory(const char *base_path) {
 	char path[MAX_PATH];
 	struct fs_file_t file;
 	int base = strlen(base_path);
@@ -66,27 +70,69 @@ static bool create_some_entries(const char *base_path)
 		return false;
 	}
 
-	LOG_INF("Creating some dir entries in %s", base_path);
-	strncpy(path, base_path, sizeof(path));
+	strncpy(path, base_path, sizeof(path)); //creates the base path
 
+	path[base++] = '/';
+	path[base] = 0; //null terminates after the "/"
+	strcat(&path[base], SOME_DIR_NAME); //Adds the directory name
+	printk("Base path before directory created: %s\n", path);
+
+	if (fs_mkdir(path) == -EEXIST){
+		LOG_ERR("Failed to create dir because already exists, %s", path);
+	}
+	else {
+		LOG_ERR("Failed to create dir, %s", path);
+	}
+
+	//Update the path to where the file is created
+	base += strlen(SOME_DIR_NAME);
 	path[base++] = '/';
 	path[base] = 0;
 	strcat(&path[base], SOME_FILE_NAME);
+	printk("Base path after directory created: %s\n", path);
 
-	if (fs_open(&file, path, FS_O_CREATE | FS_O_RDWR | FS_O_APPEND) != 0) {
+	if (fs_open(&file, path, FS_O_CREATE) != 0) {
 		LOG_ERR("Failed to create file %s", path);
 		return false;
 	}
 	fs_close(&file);
 
-	path[base] = 0;
-	strcat(&path[base], SOME_DIR_NAME);
+	return true;
+}
 
-	if (fs_mkdir(path) != 0) {
-		LOG_ERR("Failed to create dir %s", path);
-		/* If code gets here, it has at least successes to create the
-		 * file so allow function to return true.
-		 */
+/* Function to write data to directory */
+static bool write_data_to_sd(const char *base_path, SensorData *data) {
+	struct fs_file_t file;
+	fs_file_t_init(&file);
+	int buffer_size = 64;
+	char logging_data[buffer_size];
+	
+	//Generate the path for writing the data based on macros for filenames
+	char path[MAX_PATH];
+	int base = strlen(base_path);
+	strncpy(path, base_path, sizeof(path)); //creates the base path
+	path[base++] = '/';
+	path[base] = 0; //null terminates after the "/"
+	strcat(&path[base], SOME_DIR_NAME); //Adds the directory name
+	base += strlen(SOME_DIR_NAME);
+	path[base++] = '/';
+	path[base] = 0;
+	strcat(&path[base], SOME_FILE_NAME);
+
+	printk("The lux inside the write function is: %"PRId32"\n", data->lux);
+	snprintf(logging_data, buffer_size, "Test, %"PRId32"\n", data->lux); //copy the sensor data into the buffer
+
+	//printk("The size of sizeof(logging_data) is: %zu, where the size of strlen() is: %zu\n", sizeof(logging_data), strlen(logging_data));
+
+	// Open up the SD Card
+	if (fs_open(&file, path, FS_O_WRITE | FS_O_APPEND) != 0) {
+		LOG_ERR("Failed to create file within write function %s\n", path);
+		return false;
+	}
+	else {
+		fs_write(&file, logging_data, strlen(logging_data));
+		printk("Successfully opened up file within write function in path: %s\n", path);
+		fs_close(&file);
 	}
 	return true;
 }
@@ -95,6 +141,8 @@ int main(void)
 {
     //retrieve the API-specific device structure
     const struct device *dev = get_veml7700_device();
+
+	bool start_flag = false;
 
     /* raw disk i/o */
 	do {
@@ -126,33 +174,46 @@ int main(void)
 		printk("Memory Size(MB) %u\n", (uint32_t)(memory_size_mb >> 20));
 	} while (0);
 
-
+	//define the mounting point
 	mp.mnt_point = disk_mount_pt;
-	int res = fs_mount(&mp);
 
-    if (res == FR_OK) {
-		printk("Disk mounted.\n");
-		if (lsdir(disk_mount_pt) < 0) {
-			LOG_ERR("Error opening directory using lsdir()");
+	// define sensor_value struct
+	static struct sensor_value lux;    
+	SensorData sensor_data;
+
+	// while loop for data logging
+	while (1){
+		int res = fs_mount(&mp);
+		if (res == FR_OK) {
+			printk("Disk mounted.\n");
+			if (start_flag == false) { //do this once only
+				if (lsdir(disk_mount_pt) < 0) {
+					LOG_ERR("Error opening directory using lsdir()\n");
+				}
+				if (create_directory(disk_mount_pt)) {
+					printk("create_directory() returned true\n");
+				}
+				start_flag = true;
+			}
 		}
-		if (create_some_entries(disk_mount_pt)) {
-			printk("Successfully wrote some entries");
+		else {
+			printk("Error mounting disk.\n");
 		}
-	} 
-	else {
-		printk("Error mounting disk.\n");
-	}
 
-	fs_unmount(&mp);
-	printk("Filesystem unmounted\n");
-
-	while (1) {
-		static struct sensor_value lux;        
-        sensor_sample_fetch_chan(dev, SENSOR_CHAN_LIGHT);
+		sensor_sample_fetch_chan(dev, SENSOR_CHAN_LIGHT);
         sensor_channel_get(dev, SENSOR_CHAN_LIGHT, &lux);
-        printk("lux: %d.%06d\n",lux.val1, lux.val2);
-        k_sleep(K_MSEC(1000));
+		sensor_data.lux = lux.val1;
+
+		if (write_data_to_sd(disk_mount_pt, &sensor_data)){
+			printk("Data successfully written to file\n");
+		}
+        printk("lux: %d.%03d\n",lux.val1, lux.val2);
+
+		fs_unmount(&mp);//unmount the filesystem for safety
+		printk("Filesystem unmounted\n\n");
+        k_sleep(K_MSEC(5000));
 	}
+
 	return 0;
 }
 
