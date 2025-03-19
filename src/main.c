@@ -145,6 +145,7 @@ int main(void)
 
 	bool start_flag = false;
 	double corrected_lux;
+	//coefficients for correction function
 	double coeff_a = pow(6.0135, -13);
 	double coeff_b = pow(-9.3924, -9);
 	double coeff_c = pow(8.1488, -5);
