@@ -1,6 +1,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/sensor.h>
+#include <zephyr/drivers/sensor/veml7700.h>
 #include <zephyr/drivers/i2c.h>
 #include <zephyr/device.h>
 #include <zephyr/storage/disk_access.h>
@@ -139,12 +140,18 @@ static bool write_data_to_sd(const char *base_path, SensorData *data) {
 
 int main(void)
 {
-    //retrieve the API-specific device structure
-    const struct device *dev = get_veml7700_device();
+	//retrieve the API-specific device structure
+	const struct device *dev = get_veml7700_device();
 
 	bool start_flag = false;
+	double corrected_lux;
+	double coeff_a = pow(6.0135, -13);
+	double coeff_b = pow(-9.3924, -9);
+	double coeff_c = pow(8.1488, -5);
+	double coeff_d = 1.0023;
+	printk("The coefficients for the correction formula are:\ta: %.15lf, b: %.15lf, c: %.15lf, d: %.15lf\n", coeff_a, coeff_b, coeff_c, coeff_d);
 
-    /* raw disk i/o */
+	/* raw disk i/o */
 	do {
 		static const char *disk_pdrv = "SD";
 		uint64_t memory_size_mb;
@@ -179,7 +186,23 @@ int main(void)
 
 	// define sensor_value struct
 	static struct sensor_value lux;    
+	static struct sensor_value gain;
+	static struct sensor_value it;
+	//static struct sensor_value gain2;
+	//static struct sensor_value it2;
+	gain.val1 = VEML7700_ALS_GAIN_1_8; //gain of 1/8
+	it.val1 = VEML7700_ALS_IT_800; //800 ms integration time
 	SensorData sensor_data;
+
+	//configure the sensor registers
+	sensor_attr_set(dev, SENSOR_CHAN_LIGHT, SENSOR_ATTR_VEML7700_GAIN, &gain);
+	printk("The gain attribute has been set to %d.\n", gain.val1);
+	//sensor_attr_get(dev, SENSOR_CHAN_LIGHT, SENSOR_ATTR_VEML7700_GAIN, &gain2);
+	//printk("The gain value returned is %d\n", gain2.val1);
+	sensor_attr_set(dev, SENSOR_CHAN_LIGHT, SENSOR_ATTR_VEML7700_ITIME, &it);
+	printk("The integration time has been set to %d\n", it.val1);
+	//sensor_attr_get(dev, SENSOR_CHAN_LIGHT, SENSOR_ATTR_VEML7700_ITIME, &it2);
+	//printk("The integration time returned is %d\n", it2.val1);
 
 	// while loop for data logging
 	while (1){
@@ -201,17 +224,19 @@ int main(void)
 		}
 
 		sensor_sample_fetch_chan(dev, SENSOR_CHAN_LIGHT);
-        sensor_channel_get(dev, SENSOR_CHAN_LIGHT, &lux);
+        	sensor_channel_get(dev, SENSOR_CHAN_LIGHT, &lux);
 		sensor_data.lux = lux.val1;
+		corrected_lux = coeff_a * pow(lux.val1, 4) + coeff_b * pow(lux.val1, 3) + coeff_c * pow(lux.val1, 2) + coeff_d * lux.val1;
 
 		if (write_data_to_sd(disk_mount_pt, &sensor_data)){
 			printk("Data successfully written to file\n");
 		}
-        printk("lux: %d.%03d\n",lux.val1, lux.val2);
+        	printk("lux: %d.%03d\n",lux.val1, lux.val2);
+		printk("corrected lux: %lf\n", corrected_lux);
 
 		fs_unmount(&mp);//unmount the filesystem for safety
 		printk("Filesystem unmounted\n\n");
-        k_sleep(K_MSEC(5000));
+        	k_sleep(K_MSEC(5000));
 	}
 
 	return 0;
