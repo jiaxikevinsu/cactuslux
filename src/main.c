@@ -1,7 +1,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/sensor.h>
-#include <zephyr/drivers/sensor/veml7700.h>
+#include <zephyr/drivers/sensor/veml7700.h> //required for enums
 #include <zephyr/drivers/i2c.h>
 #include <zephyr/device.h>
 #include <zephyr/storage/disk_access.h>
