@@ -147,7 +147,7 @@ int main(void)
 	double corrected_lux;
 	//coefficients for correction function
 	double coeff_a = pow(6.0135, -13);
-	double coeff_b = pow(-9.3924, -9);
+	double coeff_b = pow(9.3924, -9);
 	double coeff_c = pow(8.1488, -5);
 	double coeff_d = 1.0023;
 	printk("The coefficients for the correction formula are:\ta: %.15lf, b: %.15lf, c: %.15lf, d: %.15lf\n", coeff_a, coeff_b, coeff_c, coeff_d);
@@ -192,7 +192,7 @@ int main(void)
 	//static struct sensor_value gain2;
 	//static struct sensor_value it2;
 	gain.val1 = VEML7700_ALS_GAIN_1_8; //gain of 1/8
-	it.val1 = VEML7700_ALS_IT_800; //800 ms integration time
+	it.val1 = VEML7700_ALS_IT_25; //25 ms integration time
 	SensorData sensor_data;
 
 	//configure the sensor registers
@@ -227,7 +227,7 @@ int main(void)
 		sensor_sample_fetch_chan(dev, SENSOR_CHAN_LIGHT);
         	sensor_channel_get(dev, SENSOR_CHAN_LIGHT, &lux);
 		sensor_data.lux = lux.val1;
-		corrected_lux = coeff_a * pow(lux.val1, 4) + coeff_b * pow(lux.val1, 3) + coeff_c * pow(lux.val1, 2) + coeff_d * lux.val1;
+		corrected_lux = coeff_a * pow(lux.val1, 4) - coeff_b * pow(lux.val1, 3) + coeff_c * pow(lux.val1, 2) + coeff_d * lux.val1;
 
 		if (write_data_to_sd(disk_mount_pt, &sensor_data)){
 			printk("Data successfully written to file\n");
