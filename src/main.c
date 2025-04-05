@@ -1,13 +1,14 @@
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/sensor.h>
-#include <zephyr/drivers/sensor/veml7700.h>
+#include <zephyr/drivers/sensor/veml7700.h> //required for enums
 #include <zephyr/drivers/i2c.h>
 #include <zephyr/device.h>
 #include <zephyr/storage/disk_access.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/fs/fs.h>
 #include <ff.h>
+#include <math.h>
 
 // Defines for Lux sensor
 #define I2C0_NODE DT_NODELABEL(veml7700)
@@ -143,11 +144,24 @@ int main(void)
 	//retrieve the API-specific device structure
 	const struct device *dev = get_veml7700_device();
 
+	//get the device for the SHT45
+	const struct device *sht45_dev = DEVICE_DT_GET(DT_INST(0,sensirion_sht4x));
+	if (sht45_dev == NULL) {
+		/* No such node, or the node does not have status "okay". */
+		printk("\nError: no sht45 found.\n");
+	}
+	if (!device_is_ready(dev)) {
+		printk("\nError: Device \"%s\" is not ready; "
+				"check the driver initialization logs for errors.\n",
+				dev->name);
+	}
+	printk("Found device \"%s\", getting sensor data\n", sht45_dev->name);
+
 	bool start_flag = false;
 	double corrected_lux;
 	//coefficients for correction function
 	double coeff_a = pow(6.0135, -13);
-	double coeff_b = pow(-9.3924, -9);
+	double coeff_b = pow(9.3924, -9);
 	double coeff_c = pow(8.1488, -5);
 	double coeff_d = 1.0023;
 	printk("The coefficients for the correction formula are:\ta: %.15lf, b: %.15lf, c: %.15lf, d: %.15lf\n", coeff_a, coeff_b, coeff_c, coeff_d);
@@ -189,17 +203,17 @@ int main(void)
 	static struct sensor_value lux;    
 	static struct sensor_value gain;
 	static struct sensor_value it;
-	//static struct sensor_value gain2;
-	//static struct sensor_value it2;
 	gain.val1 = VEML7700_ALS_GAIN_1_8; //gain of 1/8
-	it.val1 = VEML7700_ALS_IT_800; //800 ms integration time
+	it.val1 = VEML7700_ALS_IT_25; //25 ms integration time
 	SensorData sensor_data;
+
+	// sensor readings for sht45
+	static struct sensor_value temp;
+	static struct sensor_value rh;
 
 	//configure the sensor registers
 	sensor_attr_set(dev, SENSOR_CHAN_LIGHT, SENSOR_ATTR_VEML7700_GAIN, &gain);
 	printk("The gain attribute has been set to %d.\n", gain.val1);
-	//sensor_attr_get(dev, SENSOR_CHAN_LIGHT, SENSOR_ATTR_VEML7700_GAIN, &gain2);
-	//printk("The gain value returned is %d\n", gain2.val1);
 	sensor_attr_set(dev, SENSOR_CHAN_LIGHT, SENSOR_ATTR_VEML7700_ITIME, &it);
 	printk("The integration time has been set to %d\n", it.val1);
 	//sensor_attr_get(dev, SENSOR_CHAN_LIGHT, SENSOR_ATTR_VEML7700_ITIME, &it2);
@@ -225,15 +239,21 @@ int main(void)
 		}
 
 		sensor_sample_fetch_chan(dev, SENSOR_CHAN_LIGHT);
-        	sensor_channel_get(dev, SENSOR_CHAN_LIGHT, &lux);
+        sensor_channel_get(dev, SENSOR_CHAN_LIGHT, &lux);
 		sensor_data.lux = lux.val1;
-		corrected_lux = coeff_a * pow(lux.val1, 4) + coeff_b * pow(lux.val1, 3) + coeff_c * pow(lux.val1, 2) + coeff_d * lux.val1;
+		corrected_lux = coeff_a * pow(lux.val1, 4) - coeff_b * pow(lux.val1, 3) + coeff_c * pow(lux.val1, 2) + coeff_d * lux.val1;
+
+		sensor_sample_fetch_chan(sht45_dev, SENSOR_CHAN_AMBIENT_TEMP);
+		sensor_channel_get(sht45_dev, SENSOR_CHAN_AMBIENT_TEMP, &temp);
+		sensor_sample_fetch_chan(sht45_dev, SENSOR_CHAN_HUMIDITY);
+		sensor_channel_get(sht45_dev, SENSOR_CHAN_HUMIDITY, &rh);
 
 		if (write_data_to_sd(disk_mount_pt, &sensor_data)){
 			printk("Data successfully written to file\n");
 		}
-        	printk("lux: %d.%03d\n",lux.val1, lux.val2);
-		printk("corrected lux: %lf\n", corrected_lux);
+        printk("lux: %d.%03d\n",lux.val1, lux.val2);
+		printk("temp: %d.%03d\n",temp.val1, temp.val2);
+		printk("rh: %d.%03d\n",rh.val1, rh.val2);
 
 		fs_unmount(&mp);//unmount the filesystem for safety
 		printk("Filesystem unmounted\n\n");

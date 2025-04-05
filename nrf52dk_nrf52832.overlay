@@ -23,6 +23,12 @@
         reg = < 0x10 >;
         label = "VEML7700";
     };
+
+	sht4x:sht4x@44{
+		compatible = "sensirion,sht4x";
+		reg = <0x44>;
+		repeatability = <2>;
+	};
 };
 
 &pinctrl{
