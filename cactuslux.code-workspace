@@ -6,7 +6,9 @@
 	],
 	"settings": {
 		"files.associations": {
-			"i2c.h": "c"
+			"i2c.h": "c",
+			"sht4x.h": "c",
+			"device.h": "c"
 		}
 	}
 }
