@@ -164,7 +164,7 @@ int main(void)
 	double coeff_b = pow(9.3924, -9);
 	double coeff_c = pow(8.1488, -5);
 	double coeff_d = 1.0023;
-	printk("The coefficients for the correction formula are:\ta: %.15lf, b: %.15lf, c: %.15lf, d: %.15lf\n", coeff_a, coeff_b, coeff_c, coeff_d);
+	//printk("The coefficients for the correction formula are:\ta: %.15lf, b: %.15lf, c: %.15lf, d: %.15lf\n", coeff_a, coeff_b, coeff_c, coeff_d);
 
 	/* raw disk i/o */
 	do {
