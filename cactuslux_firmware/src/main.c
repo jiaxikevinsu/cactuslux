@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/sensor.h>
@@ -9,6 +10,9 @@
 #include <zephyr/fs/fs.h>
 #include <ff.h>
 #include <math.h>
+#include <zephyr/drivers/rtc/maxim_ds3231.h>
+#include <zephyr/drivers/counter.h>
+#include <time.h>
 
 // Defines for Lux sensor
 #define I2C0_NODE DT_NODELABEL(veml7700)
@@ -33,31 +37,10 @@ static struct fs_mount_t mp = {
 
 typedef struct {
 	int32_t lux;
+	float temp;
+	float rh;
+	char datetime[128];
 } SensorData;
-
-static const struct device *get_veml7700_device(void)
-{  
-    /* You can use either of these to get the device */
-    const struct device *dev = DEVICE_DT_GET(DT_INST(0,vishay_veml7700));
-    //const struct device *const dev = DEVICE_DT_GET_ANY(st_lsm6dsl);
-
-    //veml7700_init(dev);
-    if (dev == NULL) {
-        /* No such node, or the node does not have status "okay". */
-        printk("\nError: no device found.\n");
-        return NULL;
-    }
-
-    if (!device_is_ready(dev)) {
-        printk("\nError: Device \"%s\" is not ready; "
-               "check the driver initialization logs for errors.\n",
-               dev->name);
-        return NULL;
-    }
-
-    printk("Found device \"%s\", getting sensor data\n", dev->name);
-    return dev;
-}
 
 /* Function to create data directory and file if it doesn't exist */
 static bool create_directory(const char *base_path) {
@@ -77,7 +60,7 @@ static bool create_directory(const char *base_path) {
 	path[base++] = '/';
 	path[base] = 0; //null terminates after the "/"
 	strcat(&path[base], SOME_DIR_NAME); //Adds the directory name
-	printk("Base path before directory created: %s\n", path);
+	//LOG_INF("Base path before directory created: %s\n", path);
 
 	if (fs_mkdir(path) == -EEXIST){
 		LOG_ERR("Failed to create dir because already exists, %s", path);
@@ -91,7 +74,7 @@ static bool create_directory(const char *base_path) {
 	path[base++] = '/';
 	path[base] = 0;
 	strcat(&path[base], SOME_FILE_NAME);
-	printk("Base path after directory created: %s\n", path);
+	//LOG_INF("Base path after directory created: %s\n", path);
 
 	if (fs_open(&file, path, FS_O_CREATE) != 0) {
 		LOG_ERR("Failed to create file %s", path);
@@ -102,11 +85,63 @@ static bool create_directory(const char *base_path) {
 	return true;
 }
 
+/* Format times as: YYYY-MM-DD HH:MM:SS DOW DOY */
+static char *format_time(struct tm *time){ 
+	static char buf[64]; //buffer to store formatted time
+	char *bp = buf; //pointer to the current write position
+	char *const bpe = bp + sizeof(buf); //pointer to the end of the buffer
+	//struct tm *tp = time;
+	bp += strftime(bp, bpe - bp, "%Y-%m-%d %H:%M:%S", time); //format date and time as a string, adjusts the write location of bp by N*sizeof(char)
+	bp += strftime(bp, bpe - bp, " %a", time);
+	return buf;
+}
+
+struct tm get_rtc_time(const struct device *i2c_dev){
+	// Directly reads and interprets the date time registers of the DS3231, outputs a tm struct
+	uint8_t buf_sec = 0, buf_min = 0, buf_hour = 0, buf_day = 0, buf_date = 0, buf_month = 0, buf_year = 0;
+	struct tm current_time = {0};
+	int ret = i2c_reg_read_byte(i2c_dev, 0x68, 0x00, &buf_sec);
+	ret = i2c_reg_read_byte(i2c_dev, 0x68, 0x01, &buf_min);
+	ret = i2c_reg_read_byte(i2c_dev, 0x68, 0x02, &buf_hour);
+	ret = i2c_reg_read_byte(i2c_dev, 0x68, 0x03, &buf_day);
+	ret = i2c_reg_read_byte(i2c_dev, 0x68, 0x04, &buf_date);
+	ret = i2c_reg_read_byte(i2c_dev, 0x68, 0x05, &buf_month);
+	ret = i2c_reg_read_byte(i2c_dev, 0x68, 0x06, &buf_year);
+	// if (ret != 0){
+	// 	printk("There was an error reading from the register");
+	// }
+	current_time.tm_sec = (((buf_sec & 112) >> 4) * 10) + (buf_sec & 15);//((buf_sec / 10) << 4) | (buf_sec % 10);
+	current_time.tm_min = (((buf_min & 112) >> 4) * 10) + (buf_min & 15);
+
+	int hour_calc = (((buf_hour & 16) >> 4) * 10) + (buf_hour & 15);
+	if (((buf_hour & 64) >> 6) == 1){ //this means 12 hour format
+		if (((buf_hour & 32) >> 5) == 1){ //this means PM
+			//handle edge cases:
+			if (hour_calc == 12){
+				current_time.tm_hour = 12; //convert to 24 hour time
+			}
+		} else { //this means AM time
+			if (hour_calc == 12){
+				current_time.tm_hour = 0; //convert to 24 hour time
+			}
+		}
+	} else {
+		current_time.tm_hour = hour_calc + (((buf_hour & 32) >> 5) * 20);  //24 hour time
+	}
+	current_time.tm_wday = buf_day;
+	current_time.tm_mday = (((buf_date & 48) >> 4) * 10) + (buf_date & 15);
+	current_time.tm_mon = (((buf_month & 16) >> 4) * 10) + (buf_month & 15); //ignore bit 7
+	current_time.tm_year = (((buf_year & 240) >> 4) * 10) + (buf_year & 15);
+	//printk("The following buffers contains: sec: %hhu, min: %hhu, hour: %hhu, wday: %hhu, mday: %hhu, mon: %hhu, year: %hhu\n", buf_sec, buf_min, buf_hour, buf_day, buf_date, buf_month, buf_year);
+	//printk("The time formatted is: sec: %d, min: %d, hour: %d, wday: %d, mday: %d, mon: %d, year: %d\n", current_time.tm_sec, current_time.tm_min, current_time.tm_hour, current_time.tm_wday, current_time.tm_mday, current_time.tm_mon, current_time.tm_year);
+	return current_time;
+}
+
 /* Function to write data to directory */
 static bool write_data_to_sd(const char *base_path, SensorData *data) {
 	struct fs_file_t file;
 	fs_file_t_init(&file);
-	int buffer_size = 64;
+	int buffer_size = 256;
 	char logging_data[buffer_size];
 	
 	//Generate the path for writing the data based on macros for filenames
@@ -121,50 +156,57 @@ static bool write_data_to_sd(const char *base_path, SensorData *data) {
 	path[base] = 0;
 	strcat(&path[base], SOME_FILE_NAME);
 
-	printk("The lux inside the write function is: %"PRId32"\n", data->lux);
-	snprintf(logging_data, buffer_size, "Test, %"PRId32"\n", data->lux); //copy the sensor data into the buffer
+	//printk("The lux inside the write function is: %"PRId32"\n", data->lux);
+	snprintf(logging_data, buffer_size, "[%s], %"PRId32" lux, %f F, %f%%\n", data->datetime, data->lux, data->temp, data->rh); //copy the sensor data into the buffer
 
 	//printk("The size of sizeof(logging_data) is: %zu, where the size of strlen() is: %zu\n", sizeof(logging_data), strlen(logging_data));
 
 	// Open up the SD Card
 	if (fs_open(&file, path, FS_O_WRITE | FS_O_APPEND) != 0) {
-		LOG_ERR("Failed to create file within write function %s\n", path);
+		LOG_ERR("Failed to create file within write function %s", path);
 		return false;
 	}
 	else {
 		fs_write(&file, logging_data, strlen(logging_data));
-		printk("Successfully opened up file within write function in path: %s\n", path);
+		LOG_INF("Successfully opened up file within write function in path: %s", path);
 		fs_close(&file);
 	}
 	return true;
 }
 
+// void update_sensor_data(SensorData *sensor_data){
+
+// }
+
 int main(void)
 {
-	//retrieve the API-specific device structure
-	const struct device *dev = get_veml7700_device();
-
-	//get the device for the SHT45
-	const struct device *sht45_dev = DEVICE_DT_GET(DT_INST(0,sensirion_sht4x));
-	if (sht45_dev == NULL) {
-		/* No such node, or the node does not have status "okay". */
-		printk("\nError: no sht45 found.\n");
-	}
-	if (!device_is_ready(dev)) {
-		printk("\nError: Device \"%s\" is not ready; "
-				"check the driver initialization logs for errors.\n",
-				dev->name);
-	}
-	printk("Found device \"%s\", getting sensor data\n", sht45_dev->name);
-
+	SensorData sensor_data; //struct for storing data
+	SensorData *sd_ptr = &sensor_data;
 	bool start_flag = false;
-	double corrected_lux;
+	//double corrected_lux;
 	//coefficients for correction function
-	double coeff_a = pow(6.0135, -13);
-	double coeff_b = pow(9.3924, -9);
-	double coeff_c = pow(8.1488, -5);
-	double coeff_d = 1.0023;
+	// double coeff_a = pow(6.0135, -13);
+	// double coeff_b = pow(9.3924, -9);
+	// double coeff_c = pow(8.1488, -5);
+	// double coeff_d = 1.0023;
 	//printk("The coefficients for the correction formula are:\ta: %.15lf, b: %.15lf, c: %.15lf, d: %.15lf\n", coeff_a, coeff_b, coeff_c, coeff_d);
+
+	//retrieve the API-specific device structures
+	const struct device *i2c_dev = DEVICE_DT_GET(DT_NODELABEL(i2c0));
+	const struct device *veml_dev = DEVICE_DT_GET(DT_INST(0,vishay_veml7700));
+	const struct device *sht45_dev = DEVICE_DT_GET(DT_INST(0,sensirion_sht4x));
+	const struct device *ds3231_dev = DEVICE_DT_GET(DT_INST(0,maxim_ds3231));
+
+	// if (sht45_dev == NULL) {
+	// 	/* No such node, or the node does not have status "okay". */
+	// 	LOG_INF("\nError: no sht45 found.\n");
+	// }
+	// if (!device_is_ready(veml_dev)) {
+	// 	LOG_INF("\nError: Device \"%s\" is not ready; "
+	// 			"check the driver initialization logs for errors.\n",
+	// 			veml_dev->name);
+	// }
+	// LOG_INF("Found device \"%s\", getting sensor data\n", sht45_dev->name);
 
 	/* raw disk i/o */
 	do {
@@ -190,32 +232,30 @@ int main(void)
 			LOG_ERR("Unable to get sector size");
 			break;
 		}
-		printk("Sector size %u\n", block_size);
+		LOG_INF("Sector size %u", block_size);
 
 		memory_size_mb = (uint64_t)block_count * block_size;
-		printk("Memory Size(MB) %u\n", (uint32_t)(memory_size_mb >> 20));
+		LOG_INF("Memory Size(MB) %u", (uint32_t)(memory_size_mb >> 20));
 	} while (0);
 
 	//define the mounting point
 	mp.mnt_point = disk_mount_pt;
 
 	// define sensor_value struct
-	static struct sensor_value lux;    
+	static struct sensor_value lux;
 	static struct sensor_value gain;
 	static struct sensor_value it;
-	gain.val1 = VEML7700_ALS_GAIN_1_8; //gain of 1/8
-	it.val1 = VEML7700_ALS_IT_25; //25 ms integration time
-	SensorData sensor_data;
-
 	// sensor readings for sht45
 	static struct sensor_value temp;
 	static struct sensor_value rh;
 
 	//configure the sensor registers
-	sensor_attr_set(dev, SENSOR_CHAN_LIGHT, SENSOR_ATTR_VEML7700_GAIN, &gain);
-	printk("The gain attribute has been set to %d.\n", gain.val1);
-	sensor_attr_set(dev, SENSOR_CHAN_LIGHT, SENSOR_ATTR_VEML7700_ITIME, &it);
-	printk("The integration time has been set to %d\n", it.val1);
+	gain.val1 = VEML7700_ALS_GAIN_1_8; //gain of 1/8
+	it.val1 = VEML7700_ALS_IT_25; //25 ms integration time
+	sensor_attr_set(veml_dev, SENSOR_CHAN_LIGHT, SENSOR_ATTR_VEML7700_GAIN, &gain);
+	LOG_INF("The gain attribute has been set to %d.", gain.val1);
+	sensor_attr_set(veml_dev, SENSOR_CHAN_LIGHT, SENSOR_ATTR_VEML7700_ITIME, &it);
+	LOG_INF("The integration time has been set to %d", it.val1);
 	//sensor_attr_get(dev, SENSOR_CHAN_LIGHT, SENSOR_ATTR_VEML7700_ITIME, &it2);
 	//printk("The integration time returned is %d\n", it2.val1);
 
@@ -223,41 +263,48 @@ int main(void)
 	while (1){
 		int res = fs_mount(&mp);
 		if (res == FR_OK) {
-			printk("Disk mounted.\n");
+			LOG_INF("Disk mounted.");
 			if (start_flag == false) { //do this once only
 				if (lsdir(disk_mount_pt) < 0) {
-					LOG_ERR("Error opening directory using lsdir()\n");
+					LOG_ERR("Error opening directory using lsdir()");
 				}
 				if (create_directory(disk_mount_pt)) {
-					printk("create_directory() returned true\n");
+					LOG_INF("create_directory() returned true");
 				}
 				start_flag = true;
 			}
 		}
 		else {
-			printk("Error mounting disk.\n");
+			LOG_ERR("Error mounting disk.");
 		}
 
-		sensor_sample_fetch_chan(dev, SENSOR_CHAN_LIGHT);
-        sensor_channel_get(dev, SENSOR_CHAN_LIGHT, &lux);
-		sensor_data.lux = lux.val1;
-		corrected_lux = coeff_a * pow(lux.val1, 4) - coeff_b * pow(lux.val1, 3) + coeff_c * pow(lux.val1, 2) + coeff_d * lux.val1;
-
+		sensor_sample_fetch_chan(veml_dev, SENSOR_CHAN_LIGHT);
+        sensor_channel_get(veml_dev, SENSOR_CHAN_LIGHT, &lux);
 		sensor_sample_fetch_chan(sht45_dev, SENSOR_CHAN_AMBIENT_TEMP);
 		sensor_channel_get(sht45_dev, SENSOR_CHAN_AMBIENT_TEMP, &temp);
 		sensor_sample_fetch_chan(sht45_dev, SENSOR_CHAN_HUMIDITY);
 		sensor_channel_get(sht45_dev, SENSOR_CHAN_HUMIDITY, &rh);
 
+		struct tm tm_curr_time = get_rtc_time(i2c_dev);
+
+		//corrected_lux = coeff_a * pow(lux.val1, 4) - coeff_b * pow(lux.val1, 3) + coeff_c * pow(lux.val1, 2) + coeff_d * lux.val1;
+
+		sensor_data.lux = lux.val1;
+		sensor_data.temp = (float)(((temp.val1 + (temp.val2 * 0.000001)) * 9 / 5) + 32.0 );
+		sensor_data.rh = rh.val1 + (rh.val2 * 0.000001);
+		 // Optionally clear the array (not strictly necessary before overwriting)
+		memset(sd_ptr->datetime, 0, sizeof(sd_ptr->datetime));
+		// Safely format and write the new datetime string
+		snprintf(sd_ptr->datetime, sizeof(sd_ptr->datetime), "%s", format_time(&tm_curr_time));
+
 		if (write_data_to_sd(disk_mount_pt, &sensor_data)){
-			printk("Data successfully written to file\n");
+			LOG_INF("Data successfully written to file");
 		}
-        printk("lux: %d.%03d\n",lux.val1, lux.val2);
-		printk("temp: %d.%03d\n",temp.val1, temp.val2);
-		printk("rh: %d.%03d\n",rh.val1, rh.val2);
+        printk("Datetime: %s, Lux: %"PRId32", TempF: %f, RH: %f%%\n", sensor_data.datetime, sensor_data.lux, sensor_data.temp, sensor_data.rh);
 
 		fs_unmount(&mp);//unmount the filesystem for safety
-		printk("Filesystem unmounted\n\n");
-        	k_sleep(K_MSEC(5000));
+		LOG_INF("Filesystem unmounted\n");
+        	k_sleep(K_MSEC(3000));
 	}
 
 	return 0;
@@ -275,11 +322,11 @@ static int lsdir(const char *path)
 	/* Verify fs_opendir() */
 	res = fs_opendir(&dirp, path);
 	if (res) {
-		printk("Error opening dir %s [%d]\n", path, res);
+		LOG_ERR("Error opening dir %s [%d]", path, res);
 		return res;
 	}
 
-	printk("\nListing dir %s ...\n", path);
+	LOG_INF("Listing dir %s ...", path);
 	for (;;) {
 		/* Verify fs_readdir() */
 		res = fs_readdir(&dirp, &entry);
@@ -290,9 +337,9 @@ static int lsdir(const char *path)
 		}
 
 		if (entry.type == FS_DIR_ENTRY_DIR) {
-			printk("[DIR ] %s\n", entry.name);
+			LOG_INF("[DIR ] %s", entry.name);
 		} else {
-			printk("[FILE] %s (size = %zu)\n",
+			LOG_INF("[FILE] %s (size = %zu)",
 				entry.name, entry.size);
 		}
 		count++;
